@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mic Mixer">
+<title>Mic Mixer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #14171c; color: #e9edf2; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  body { padding: 16px; max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 4px 0 14px; }
+  .row { display: -webkit-box; display: flex; margin-bottom: 12px; }
+  input[type=text] { -webkit-box-flex: 1; flex: 1; min-width: 0; padding: 12px; font-size: 16px; border: 1px solid #3a424d; border-radius: 8px; background: #1d222a; color: #e9edf2; }
+  button { padding: 12px 18px; font-size: 16px; border: 0; border-radius: 8px; background: #3b82f6; color: #fff; margin-left: 8px; }
+  button.big { width: 100%; margin: 0; padding: 16px; font-size: 18px; }
+  button.on { background: #e5484d; }
+  .video { position: relative; width: 100%; padding-bottom: 56.25%; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  .video iframe, .video #player { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  label { display: block; font-size: 14px; color: #9aa6b4; margin: 14px 0 6px; }
+  input[type=range] { width: 100%; }
+  .meter { height: 10px; background: #1d222a; border-radius: 5px; overflow: hidden; margin-top: 8px; }
+  .meter div { height: 100%; width: 0; background: #34c759; }
+  .chk { display: -webkit-box; display: flex; align-items: center; margin-top: 14px; font-size: 16px; }
+  .chk input { width: 22px; height: 22px; margin: 0 10px 0 0; }
+  #status { margin-top: 16px; padding: 12px; border-radius: 8px; background: #1d222a; font-size: 14px; line-height: 1.4; color: #c5ced9; }
+  .note { font-size: 13px; color: #8591a0; margin-top: 14px; line-height: 1.45; }
+</style>
+</head>
+<body>
+<h1>Mic Mixer</h1>
+
+<div class="row">
+  <input type="text" id="url" placeholder="Paste a YouTube link" autocapitalize="off" autocorrect="off">
+  <button id="load">Load</button>
+</div>
+
+<div class="video"><div id="player"></div></div>
+
+<button class="big" id="micBtn">Turn mic on</button>
+
+<div class="meter"><div id="level"></div></div>
+
+<label for="micVol">Mic volume</label>
+<input type="range" id="micVol" min="0" max="300" value="150">
+
+<label for="musicVol">Music volume</label>
+<input type="range" id="musicVol" min="0" max="100" value="80">
+
+<div class="chk"><input type="checkbox" id="mono" checked><span>Mono output (one channel)</span></div>
+
+<div id="status">Paste a link, press Load, then turn the mic on while the video plays. Watch whether the music gets quieter or pauses when the mic starts.</div>
+
+<p class="note">Use a headset-style mic through the TRRS splitter. Keep the mic away from the speaker to avoid squealing. Set Auto-Lock to Never so the screen stays awake.</p>
+
+<script>
+var player = null, ytReady = false, pendingId = null;
+var ctx = null, stream = null, src = null, gain = null, analyser = null, micOn = false, raf = null;
+
+function $(id) { return document.getElementById(id); }
+function say(t) { $('status').textContent = t; }
+
+// ---- YouTube ----
+var tag = document.createElement('script');
+tag.src = 'https://www.youtube.com/iframe_api';
+document.head.appendChild(tag);
+
+window.onYouTubeIframeAPIReady = function () {
+  ytReady = true;
+  if (pendingId) { makePlayer(pendingId); }
+};
+
+function videoId(s) {
+  s = (s || '').replace(/^\s+|\s+$/g, '');
+  var m = s.match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([A-Za-z0-9_-]{11})/);
+  if (m) { return m[1]; }
+  if (/^[A-Za-z0-9_-]{11}$/.test(s)) { return s; }
+  return null;
+}
+
+function makePlayer(id) {
+  if (player && player.loadVideoById) {
+    player.loadVideoById(id);
+    return;
+  }
+  player = new YT.Player('player', {
+    videoId: id,
+    playerVars: { playsinline: 1, rel: 0 },
+    events: {
+      onReady: function () { player.setVolume(parseInt($('musicVol').value, 10)); say('Video loaded. Press play, then turn the mic on.'); },
+      onError: function () { say('This video cannot be played here. Try another link.'); }
+    }
+  });
+}
+
+$('load').onclick = function () {
+  var id = videoId($('url').value);
+  if (!id) { say('That does not look like a YouTube link.'); return; }
+  if (!ytReady) { pendingId = id; say('Loading the YouTube player...'); return; }
+  makePlayer(id);
+};
+
+$('musicVol').oninput = function () {
+  if (player && player.setVolume) { player.setVolume(parseInt(this.value, 10)); }
+};
+
+// ---- Mic ----
+function applyMono() {
+  if (!gain) { return; }
+  if ($('mono').checked) {
+    gain.channelCount = 1;
+    gain.channelCountMode = 'explicit';
+  } else {
+    gain.channelCount = 2;
+    gain.channelCountMode = 'max';
+  }
+}
+
+function drawLevel() {
+  if (!analyser) { return; }
+  var buf = new Uint8Array(analyser.fftSize);
+  analyser.getByteTimeDomainData(buf);
+  var peak = 0;
+  for (var i = 0; i < buf.length; i++) {
+    var v = Math.abs(buf[i] - 128) / 128;
+    if (v > peak) { peak = v; }
+  }
+  $('level').style.width = Math.min(100, Math.round(peak * 140)) + '%';
+  raf = requestAnimationFrame(drawLevel);
+}
+
+function startMic() {
+  var AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    say('This Safari is too old for microphone access.');
+    return;
+  }
+  if (!ctx) { ctx = new AC(); }
+  if (ctx.resume) { ctx.resume(); }
+  navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+  }).then(function (s) {
+    stream = s;
+    src = ctx.createMediaStreamSource(s);
+    gain = ctx.createGain();
+    gain.gain.value = parseInt($('micVol').value, 10) / 100;
+    analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    src.connect(gain);
+    gain.connect(analyser);
+    gain.connect(ctx.destination);
+    applyMono();
+    micOn = true;
+    $('micBtn').textContent = 'Turn mic off';
+    $('micBtn').className = 'big on';
+    drawLevel();
+    say('Mic is live. Check the music: is it still playing at the same volume?');
+  }).catch(function (e) {
+    say('Mic blocked or not found (' + (e && e.name ? e.name : 'error') + '). Check the adapter and allow microphone access in Safari settings.');
+  });
+}
+
+function stopMic() {
+  if (raf) { cancelAnimationFrame(raf); raf = null; }
+  if (stream) {
+    var t = stream.getTracks();
+    for (var i = 0; i < t.length; i++) { t[i].stop(); }
+  }
+  try { if (src) { src.disconnect(); } if (gain) { gain.disconnect(); } } catch (e) {}
+  stream = src = gain = analyser = null;
+  micOn = false;
+  $('level').style.width = '0';
+  $('micBtn').textContent = 'Turn mic on';
+  $('micBtn').className = 'big';
+  say('Mic is off.');
+}
+
+$('micBtn').onclick = function () { if (micOn) { stopMic(); } else { startMic(); } };
+$('micVol').oninput = function () { if (gain) { gain.gain.value = parseInt(this.value, 10) / 100; } };
+$('mono').onchange = applyMono;
+</script>
+</body>
+</html>
