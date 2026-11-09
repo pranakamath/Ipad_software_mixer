@@ -20,6 +20,7 @@
   .video iframe, .video #player { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
   label { display: block; font-size: 14px; color: #9aa6b4; margin: 14px 0 6px; }
   input[type=range] { width: 100%; }
+  select { width: 100%; padding: 12px; font-size: 16px; border: 1px solid #3a424d; border-radius: 8px; background: #1d222a; color: #e9edf2; }
   .meter { height: 10px; background: #1d222a; border-radius: 5px; overflow: hidden; margin-top: 8px; }
   .meter div { height: 100%; width: 0; background: #34c759; }
   .chk { display: -webkit-box; display: flex; align-items: center; margin-top: 14px; font-size: 16px; }
@@ -39,6 +40,9 @@
 <div class="video"><div id="player"></div></div>
 
 <button class="big" id="micBtn">Turn mic on</button>
+
+<label for="inputSel">Mic input</label>
+<select id="inputSel"><option>Turn the mic on to list inputs</option></select>
 
 <div class="meter"><div id="level"></div></div>
 
@@ -130,7 +134,31 @@ function drawLevel() {
   raf = requestAnimationFrame(drawLevel);
 }
 
-function startMic() {
+function listInputs(s) {
+  var track = s.getAudioTracks()[0];
+  var current = (track && track.getSettings) ? track.getSettings().deviceId : '';
+  var name = track ? track.label : 'unknown';
+  if (!navigator.mediaDevices.enumerateDevices) { say('Mic is live using: ' + name); return; }
+  navigator.mediaDevices.enumerateDevices().then(function (list) {
+    var sel = $('inputSel');
+    sel.innerHTML = '';
+    var n = 0;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].kind === 'audioinput') {
+        var o = document.createElement('option');
+        o.value = list[i].deviceId;
+        o.textContent = list[i].label || ('Input ' + (n + 1));
+        if (list[i].deviceId === current) { o.selected = true; }
+        sel.appendChild(o);
+        n++;
+      }
+    }
+    say('Mic is live using: ' + name + '. Inputs found: ' + n + '. ' +
+      (n < 2 ? 'The iPad only sees one input, so it cannot use your external mic.' : 'Pick your external mic from the list.'));
+  });
+}
+
+function startMic(deviceId) {
   var AC = window.AudioContext || window.webkitAudioContext;
   if (!AC || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     say('This Safari is too old for microphone access.');
@@ -138,9 +166,9 @@ function startMic() {
   }
   if (!ctx) { ctx = new AC(); }
   if (ctx.resume) { ctx.resume(); }
-  navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-  }).then(function (s) {
+  var audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+  if (deviceId) { audio.deviceId = { exact: deviceId }; }
+  navigator.mediaDevices.getUserMedia({ audio: audio }).then(function (s) {
     stream = s;
     src = ctx.createMediaStreamSource(s);
     gain = ctx.createGain();
@@ -155,7 +183,7 @@ function startMic() {
     $('micBtn').textContent = 'Turn mic off';
     $('micBtn').className = 'big on';
     drawLevel();
-    say('Mic is live. Check the music: is it still playing at the same volume?');
+    listInputs(s);
   }).catch(function (e) {
     say('Mic blocked or not found (' + (e && e.name ? e.name : 'error') + '). Check the adapter and allow microphone access in Safari settings.');
   });
@@ -179,6 +207,9 @@ function stopMic() {
 $('micBtn').onclick = function () { if (micOn) { stopMic(); } else { startMic(); } };
 $('micVol').oninput = function () { if (gain) { gain.gain.value = parseInt(this.value, 10) / 100; } };
 $('mono').onchange = applyMono;
+$('inputSel').onchange = function () {
+  if (micOn) { var id = this.value; stopMic(); startMic(id); }
+};
 </script>
 </body>
 </html>
